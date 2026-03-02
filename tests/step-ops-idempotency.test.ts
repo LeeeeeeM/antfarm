@@ -81,6 +81,75 @@ describe("step-ops idempotency guards", () => {
     assert.equal(run.context, "{}", "run context must remain unchanged");
   });
 
+  it("fails setup completion early when BUILD_CMD/TEST_CMD are missing", () => {
+    const runId = crypto.randomUUID();
+    const stepId = crypto.randomUUID();
+    const t = now();
+
+    sqlite.prepare(
+      "INSERT INTO runs (id, workflow_id, task, status, context, created_at, updated_at) VALUES (?, 'feature-dev', 'task', 'running', '{\"repo\":\"/tmp/repo\",\"branch\":\"feature/x\"}', ?, ?)"
+    ).run(runId, t, t);
+    sqlite.prepare(
+      "INSERT INTO steps (id, run_id, step_id, agent_id, step_index, input_template, expects, status, type, created_at, updated_at) VALUES (?, ?, 'setup', 'feature-dev_setup', 1, 'input', 'STATUS: done', 'running', 'single', ?, ?)"
+    ).run(stepId, runId, t, t);
+
+    const result = stepOpsModule.completeStep(stepId, "STATUS: done\nCI_NOTES: baseline checked");
+    assert.deepEqual(result, { advanced: false, runCompleted: false });
+
+    const step = sqlite.prepare("SELECT status, output FROM steps WHERE id = ?").get(stepId) as { status: string; output: string };
+    assert.equal(step.status, "failed");
+    assert.match(step.output, /missing required key\(s\) build_cmd, test_cmd/);
+
+    const run = sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: string };
+    assert.equal(run.status, "failed");
+  });
+
+  it("fails completion when output is empty and required STATUS key is missing", () => {
+    const runId = crypto.randomUUID();
+    const stepId = crypto.randomUUID();
+    const t = now();
+
+    sqlite.prepare(
+      "INSERT INTO runs (id, workflow_id, task, status, context, created_at, updated_at) VALUES (?, 'feature-dev', 'task', 'running', '{}', ?, ?)"
+    ).run(runId, t, t);
+    sqlite.prepare(
+      "INSERT INTO steps (id, run_id, step_id, agent_id, step_index, input_template, expects, status, type, created_at, updated_at) VALUES (?, ?, 'plan', 'feature-dev_planner', 0, 'input', 'STATUS: done', 'running', 'single', ?, ?)"
+    ).run(stepId, runId, t, t);
+
+    const result = stepOpsModule.completeStep(stepId, "");
+    assert.deepEqual(result, { advanced: false, runCompleted: false });
+
+    const step = sqlite.prepare("SELECT status, output FROM steps WHERE id = ?").get(stepId) as { status: string; output: string };
+    assert.equal(step.status, "failed");
+    assert.match(step.output, /missing required key\(s\) status/);
+
+    const run = sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: string };
+    assert.equal(run.status, "failed");
+  });
+
+  it("fails plan completion when REPO/BRANCH keys are missing", () => {
+    const runId = crypto.randomUUID();
+    const stepId = crypto.randomUUID();
+    const t = now();
+
+    sqlite.prepare(
+      "INSERT INTO runs (id, workflow_id, task, status, context, created_at, updated_at) VALUES (?, 'feature-dev', 'task', 'running', '{}', ?, ?)"
+    ).run(runId, t, t);
+    sqlite.prepare(
+      "INSERT INTO steps (id, run_id, step_id, agent_id, step_index, input_template, expects, status, type, created_at, updated_at) VALUES (?, ?, 'plan', 'feature-dev_planner', 0, 'input', 'STATUS: done', 'running', 'single', ?, ?)"
+    ).run(stepId, runId, t, t);
+
+    const result = stepOpsModule.completeStep(stepId, "STATUS: done");
+    assert.deepEqual(result, { advanced: false, runCompleted: false });
+
+    const step = sqlite.prepare("SELECT status, output FROM steps WHERE id = ?").get(stepId) as { status: string; output: string };
+    assert.equal(step.status, "failed");
+    assert.match(step.output, /missing required key\(s\) repo, branch/);
+
+    const run = sqlite.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as { status: string };
+    assert.equal(run.status, "failed");
+  });
+
   it("failStep is a no-op for already-completed steps", async () => {
     const runId = crypto.randomUUID();
     const stepId = crypto.randomUUID();
