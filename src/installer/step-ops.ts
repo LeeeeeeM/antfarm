@@ -502,6 +502,13 @@ export function claimStep(agentId: string): ClaimResult {
          WHERE prev.run_id = s.run_id
            AND prev.step_index < s.step_index
            AND prev.status NOT IN ('done', 'skipped')
+           AND NOT (
+             prev.type = 'loop'
+             AND prev.status = 'running'
+             AND prev.current_story_id IS NULL
+             AND json_extract(prev.loop_config, '$.verifyEach') = 1
+             AND json_extract(prev.loop_config, '$.verifyStep') = s.step_id
+           )
        )
     ORDER BY s.step_index ASC, s.step_id ASC
      LIMIT 1`
@@ -680,14 +687,24 @@ export function completeStep(stepId: string, output: string): { advanced: boolea
   const db = getDb();
 
   const step = db.prepare(
-    "SELECT id, run_id, step_id, step_index, type, loop_config, current_story_id FROM steps WHERE id = ?"
-  ).get(stepId) as { id: string; run_id: string; step_id: string; step_index: number; type: string; loop_config: string | null; current_story_id: string | null } | undefined;
+    "SELECT id, run_id, step_id, step_index, type, status, loop_config, current_story_id FROM steps WHERE id = ?"
+  ).get(stepId) as { id: string; run_id: string; step_id: string; step_index: number; type: string; status: string; loop_config: string | null; current_story_id: string | null } | undefined;
 
   if (!step) throw new Error(`Step not found: ${stepId}`);
+  // Ignore duplicate/late completions. Only running steps are allowed to complete.
+  if (step.status !== "running") {
+    return { advanced: false, runCompleted: false };
+  }
 
   // Guard: don't process completions for failed runs
   const runCheck = db.prepare("SELECT status FROM runs WHERE id = ?").get(step.run_id) as { status: string } | undefined;
   if (runCheck?.status === "failed") {
+    return { advanced: false, runCompleted: false };
+  }
+
+  // Guard: loop steps can only complete while actively holding a claimed story.
+  // If current_story_id is null, this is a stale/invalid completion (often during verify_each handoff).
+  if (step.type === "loop" && !step.current_story_id) {
     return { advanced: false, runCompleted: false };
   }
 
@@ -1036,10 +1053,11 @@ export async function failStep(stepId: string, error: string): Promise<{ retryin
   const db = getDb();
 
   const step = db.prepare(
-    "SELECT run_id, step_id, retry_count, max_retries, type, current_story_id FROM steps WHERE id = ?"
+    "SELECT run_id, step_id, status, retry_count, max_retries, type, current_story_id FROM steps WHERE id = ?"
   ).get(stepId) as {
     run_id: string;
     step_id: string;
+    status: string;
     retry_count: number;
     max_retries: number;
     type: string;
@@ -1047,6 +1065,16 @@ export async function failStep(stepId: string, error: string): Promise<{ retryin
   } | undefined;
 
   if (!step) throw new Error(`Step not found: ${stepId}`);
+  // Ignore duplicate/late failures. Only running steps are allowed to fail.
+  if (step.status !== "running") {
+    return { retrying: false, runFailed: false };
+  }
+
+  // Guard: loop steps can only fail while actively holding a claimed story.
+  // If current_story_id is null, this is a stale/invalid failure (often during verify_each handoff).
+  if (step.type === "loop" && !step.current_story_id) {
+    return { retrying: false, runFailed: false };
+  }
 
   // T9: Loop step failure — per-story retry
   if (step.type === "loop" && step.current_story_id) {

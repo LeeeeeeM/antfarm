@@ -23,7 +23,7 @@ import { listBundledWorkflows } from "../installer/workflow-fetch.js";
 import { readRecentLogs } from "../lib/logger.js";
 import { getRecentEvents, getRunEvents, type AntfarmEvent } from "../installer/events.js";
 import { startDaemon, stopDaemon, getDaemonStatus, isRunning } from "../server/daemonctl.js";
-import { claimStep, completeStep, failStep, getStories, peekStep } from "../installer/step-ops.js";
+import { claimStep, completeStep, failStep, getStories, parseOutputKeyValues, peekStep } from "../installer/step-ops.js";
 import { ensureCliSymlink } from "../installer/symlink.js";
 import { runMedicCheck, getMedicStatus, getRecentMedicChecks } from "../medic/medic.js";
 import { installMedicCron, uninstallMedicCron, isMedicCronInstalled } from "../medic/medic-cron.js";
@@ -391,6 +391,29 @@ async function main() {
         }
         output = Buffer.concat(chunks).toString("utf-8").trim();
       }
+
+      // Guardrail: planner must provide context required by downstream steps.
+      // If missing, treat as a failed step so retry/escalation policy can apply.
+      try {
+        const db = (await import("../db.js")).getDb();
+        const step = db.prepare("SELECT step_id FROM steps WHERE id = ?").get(target) as { step_id: string } | undefined;
+        if (step?.step_id === "plan") {
+          const parsed = parseOutputKeyValues(output);
+          const missing: string[] = [];
+          if (!parsed.repo?.trim()) missing.push("REPO");
+          if (!parsed.branch?.trim()) missing.push("BRANCH");
+          if (!output.includes("STORIES_JSON:")) missing.push("STORIES_JSON");
+          if (missing.length > 0) {
+            const error = `Planner output missing required key(s): ${missing.join(", ")}`;
+            const result = await failStep(target, error);
+            process.stdout.write(JSON.stringify(result) + "\n");
+            return;
+          }
+        }
+      } catch {
+        // Best-effort guardrail; continue with complete path if metadata lookup fails.
+      }
+
       const result = completeStep(target, output);
       process.stdout.write(JSON.stringify(result) + "\n");
       return;
