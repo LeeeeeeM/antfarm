@@ -301,7 +301,7 @@ steps:
   - id: pr
     agent: developer
     input: |
-      Create a pull request for your changes.
+      Create a code review submission for your changes (GitHub PR or GitLab MR).
 
       TASK:
       {{task}}
@@ -314,16 +314,28 @@ steps:
       PROGRESS LOG:
       {{progress}}
 
-      Create a PR with:
-      - Clear title summarizing the change
-      - Description explaining what and why
-      - Reference to what was tested
-
-      Use: gh pr create
+      Instructions:
+      1. Detect repository host from `git remote get-url origin`.
+      2. If GitHub:
+         - Prefer `gh pr create` with a clear title/body and test summary.
+         - If `gh` is unavailable or unauthenticated, fallback to:
+           a) push branch to origin,
+           b) generate the manual PR creation URL,
+           c) return it with explicit next-step notes.
+      3. If GitLab:
+         - Prefer `glab mr create` with a clear title/body and test summary.
+         - If `glab` is unavailable or unauthenticated, fallback to:
+           a) push branch to origin,
+           b) generate the manual MR creation URL,
+           c) return it with explicit next-step notes.
+      4. Never fail only because Git hosting CLI auth is missing if fallback (push + manual URL) succeeds.
 
       Reply with:
       STATUS: done
-      PR: URL to the pull request
+      PR: URL to the pull request / merge request (or manual creation URL)
+      PROVIDER: github|gitlab
+      SUBMISSION_MODE: auto|manual
+      SUBMISSION_NOTES: short note (e.g., used gh/glab, or pushed branch and provided manual URL)
     expects: "STATUS: done"
     on_fail:
       escalate_to: human
@@ -331,11 +343,14 @@ steps:
   - id: review
     agent: reviewer
     input: |
-      Review the pull request.
+      Review the submitted code change (GitHub PR or GitLab MR).
 
       PR: {{pr}}
       TASK: {{task}}
       CHANGES: {{changes}}
+      PROVIDER: {{provider}}
+      SUBMISSION_MODE: {{submission_mode}}
+      SUBMISSION_NOTES: {{submission_notes}}
 
       PROGRESS LOG:
       {{progress}}
@@ -346,11 +361,14 @@ steps:
       - Test coverage
       - Follows project conventions
 
-      Use: gh pr view, gh pr diff to read the PR.
-
-      IMPORTANT: Post your review to the PR on GitHub using:
-      - If approving: gh pr review <number> --approve --body "your review summary"
-      - If requesting changes: gh pr review <number> --request-changes --body "your feedback"
+      Instructions:
+      1. Detect repository host from `git remote get-url origin`.
+      2. If GitHub and PR is a real URL, use `gh pr view` / `gh pr diff`, then post review via `gh pr review`.
+      3. If GitLab and MR is a real URL, prefer `glab mr view` / `glab mr diff`, and post review via `glab mr note` (or equivalent review command).
+      4. If submission is manual URL or hosting CLI auth is unavailable:
+         - Perform local review from branch diff (`git fetch`, `git checkout {{branch}}`, `git diff` vs target branch)
+         - Return decision + actionable feedback in output
+         - Do NOT fail solely due to missing hosting auth
 
       ## Visual Review (Frontend Changes)
       Has frontend changes: {{has_frontend_changes}}
