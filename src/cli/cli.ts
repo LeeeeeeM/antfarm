@@ -410,6 +410,21 @@ async function main() {
             return;
           }
         }
+
+        // Guardrail: test must emit a successful contract before PR can consume it.
+        if (step?.step_id === "test") {
+          const parsed = parseOutputKeyValues(output);
+          const status = parsed.status?.trim().toLowerCase();
+          const missing: string[] = [];
+          if (status !== "done") missing.push("STATUS=done");
+          if (!parsed.results?.trim()) missing.push("RESULTS");
+          if (missing.length > 0) {
+            const error = `Tester output missing/invalid required key(s): ${missing.join(", ")}`;
+            const result = await failStep(target, error);
+            process.stdout.write(JSON.stringify(result) + "\n");
+            return;
+          }
+        }
       } catch {
         // Best-effort guardrail; continue with complete path if metadata lookup fails.
       }
