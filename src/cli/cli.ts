@@ -83,6 +83,18 @@ function printEvents(events: AntfarmEvent[]): void {
   }
 }
 
+async function kickRunForStep(stepId: string): Promise<void> {
+  try {
+    const db = (await import("../db.js")).getDb();
+    const row = db.prepare("SELECT run_id FROM steps WHERE id = ?").get(stepId) as { run_id: string } | undefined;
+    if (!row?.run_id) return;
+    const { kickRunNow } = await import("../installer/agent-cron.js");
+    await kickRunNow(row.run_id);
+  } catch {
+    // best-effort only — never break step completion/failure path
+  }
+}
+
 function printUsage() {
   process.stdout.write(
     [
@@ -396,7 +408,7 @@ async function main() {
       // If missing, treat as a failed step so retry/escalation policy can apply.
       try {
         const db = (await import("../db.js")).getDb();
-        const step = db.prepare("SELECT step_id FROM steps WHERE id = ?").get(target) as { step_id: string } | undefined;
+        const step = db.prepare("SELECT step_id, input_template FROM steps WHERE id = ?").get(target) as { step_id: string; input_template: string } | undefined;
         if (step?.step_id === "plan") {
           const parsed = parseOutputKeyValues(output);
           const missing: string[] = [];
@@ -425,12 +437,32 @@ async function main() {
             return;
           }
         }
+
+        // Guardrail: PR submission must provide downstream-consumable metadata.
+        // Fields beyond PR are required only when requested by this step's template.
+        if (step?.step_id === "pr") {
+          const parsed = parseOutputKeyValues(output);
+          const status = parsed.status?.trim().toLowerCase();
+          const missing: string[] = [];
+          if (status !== "done") missing.push("STATUS=done");
+          if (!parsed.pr?.trim()) missing.push("PR");
+          if (step.input_template.includes("PROVIDER:") && !parsed.provider?.trim()) missing.push("PROVIDER");
+          if (step.input_template.includes("SUBMISSION_MODE:") && !parsed.submission_mode?.trim()) missing.push("SUBMISSION_MODE");
+          if (step.input_template.includes("SUBMISSION_NOTES:") && !parsed.submission_notes?.trim()) missing.push("SUBMISSION_NOTES");
+          if (missing.length > 0) {
+            const error = `PR output missing/invalid required key(s): ${missing.join(", ")}`;
+            const result = await failStep(target, error);
+            process.stdout.write(JSON.stringify(result) + "\n");
+            return;
+          }
+        }
       } catch {
         // Best-effort guardrail; continue with complete path if metadata lookup fails.
       }
 
       const result = completeStep(target, output);
       process.stdout.write(JSON.stringify(result) + "\n");
+      await kickRunForStep(target);
       return;
     }
     if (action === "fail") {
@@ -438,6 +470,7 @@ async function main() {
       const error = args.slice(3).join(" ").trim() || "Unknown error";
       const result = await failStep(target, error);
       process.stdout.write(JSON.stringify(result) + "\n");
+      await kickRunForStep(target);
       return;
     }
     if (action === "stories") {

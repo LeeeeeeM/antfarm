@@ -364,6 +364,16 @@ export async function deleteAgentCronJobs(namePrefix: string): Promise<void> {
   }
 }
 
+export async function runCronJobNow(jobId: string): Promise<{ ok: boolean; error?: string }> {
+  // CLI-first: `cron run` is primarily a local debug/trigger operation.
+  try {
+    await runCli(["cron", "run", jobId, "--timeout", "15000"]);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `CLI trigger failed: ${err}. ${UPDATE_HINT}` };
+  }
+}
+
 export async function sendSessionMessage(params: { sessionKey: string; message: string }): Promise<{ ok: boolean; error?: string }> {
   const payload = {
     tool: "sessions_send",

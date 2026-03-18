@@ -1,4 +1,4 @@
-import { createAgentCronJob, deleteAgentCronJobs, listCronJobs, checkCronToolAvailable } from "./gateway-api.js";
+import { createAgentCronJob, deleteAgentCronJobs, listCronJobs, checkCronToolAvailable, runCronJobNow } from "./gateway-api.js";
 import type { WorkflowSpec } from "./types.js";
 import { resolveAntfarmCli } from "./paths.js";
 import { getDb } from "../db.js";
@@ -245,4 +245,45 @@ export async function teardownWorkflowCronsIfIdle(workflowId: string): Promise<v
   const active = countActiveRuns(workflowId);
   if (active > 0) return;
   await removeAgentCrons(workflowId);
+}
+
+const kickThrottleByWorkflow = new Map<string, number>();
+const KICK_THROTTLE_MS = 2_000;
+
+function toAgentShortId(workflowId: string, fullAgentId?: string): string | null {
+  if (!fullAgentId) return null;
+  const prefix = `${workflowId}_`;
+  if (!fullAgentId.startsWith(prefix)) return null;
+  return fullAgentId.slice(prefix.length);
+}
+
+/**
+ * Best-effort immediate trigger for the cron job that should pick up the next pending step.
+ * This complements periodic cron polling and reduces idle gaps after step completion/failure.
+ */
+export async function kickRunNow(runId: string): Promise<void> {
+  const db = getDb();
+  const run = db.prepare("SELECT workflow_id, status FROM runs WHERE id = ?").get(runId) as { workflow_id: string; status: string } | undefined;
+  if (!run || run.status !== "running") return;
+
+  const now = Date.now();
+  const lastKick = kickThrottleByWorkflow.get(run.workflow_id) ?? 0;
+  if (now - lastKick < KICK_THROTTLE_MS) return;
+  kickThrottleByWorkflow.set(run.workflow_id, now);
+
+  const nextPending = db.prepare(
+    "SELECT agent_id FROM steps WHERE run_id = ? AND status = 'pending' ORDER BY step_index ASC LIMIT 1"
+  ).get(runId) as { agent_id: string } | undefined;
+
+  const list = await listCronJobs();
+  if (!list.ok || !list.jobs || list.jobs.length === 0) return;
+
+  const shortAgentId = toAgentShortId(run.workflow_id, nextPending?.agent_id);
+  const expectedName = shortAgentId ? `antfarm/${run.workflow_id}/${shortAgentId}` : null;
+  const job =
+    (expectedName ? list.jobs.find((j) => j.name === expectedName) : undefined) ??
+    list.jobs.find((j) => j.name.startsWith(`antfarm/${run.workflow_id}/`));
+
+  if (!job) return;
+  await runCronJobNow(job.id);
 }
