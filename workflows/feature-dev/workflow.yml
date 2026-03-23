@@ -88,20 +88,26 @@ steps:
   - id: plan
     agent: planner
     input: |
-      Decompose the following task into ordered user stories for autonomous execution.
+      Plan this task into ordered, executable user stories.
 
       TASK:
       {{task}}
 
       Instructions:
-      1. Explore the codebase to understand the stack, conventions, and patterns
-      2. Break the task into small user stories (max 20)
-      3. Order by dependency: schema/DB first, backend, frontend, integration
-      4. Each story must fit in one developer session (one context window)
-      5. Every acceptance criterion must be mechanically verifiable
-      6. Always include "Typecheck passes" as the last criterion in every story
-      7. Every story MUST include test criteria — "Tests for [feature] pass"
-      8. The developer is expected to write tests as part of each story
+      1. Explore the repo and follow existing conventions.
+      2. Split into small stories (max 20), ordered by dependency.
+      3. Each story must fit in one developer session.
+      4. Acceptance criteria must be mechanically verifiable.
+      5. Include "Tests for [feature] pass" in each story.
+      6. End each story criteria with "Typecheck passes".
+      7. Determine REPO from TASK using this priority:
+         - If TASK contains "Repository path: <absolute path>", use that exact path.
+         - Else if TASK contains an absolute path (for example "/Users/..."), use that path.
+         - Else use the existing REPO context if provided.
+      8. If TASK includes an explicit absolute repo path, REPO MUST be that exact path. Never replace it with your current workspace path.
+      10. Output a UNIQUE branch name for this run. Never reuse an existing long-lived branch.
+      11. Branch format must include a timestamp and short suffix, for example:
+         feat/<short-topic>-{{YYYYMMDD-HHMMSS}}-<4to6char>
 
       Reply with:
       STATUS: done
@@ -116,7 +122,7 @@ steps:
   - id: setup
     agent: setup
     input: |
-      Prepare the development environment for this feature.
+      Prepare the repo baseline for this feature.
 
       TASK:
       {{task}}
@@ -125,16 +131,23 @@ steps:
       BRANCH: {{branch}}
 
       Instructions:
-      1. cd into the repo
-      2. Create the feature branch (git checkout -b {{branch}})
-      3. Read package.json, CI config, test config to understand the build/test setup
-      4. Ensure .gitignore exists — if missing, create one appropriate for the detected stack (must include .env, node_modules/, *.key, *.pem at minimum)
-      5. Run the build to establish a baseline
-      6. Run the tests to establish a baseline
-      7. Report what you found
+      1. Resolve FINAL_REPO from TASK using this priority:
+         - If TASK contains "Repository path: <absolute path>", FINAL_REPO = that exact path.
+         - Else if TASK contains an absolute path (for example "/Users/..."), FINAL_REPO = that path.
+         - Else FINAL_REPO = REPO.
+      3. Never run git/build/test in any repo other than FINAL_REPO.
+      4. Start from main (or project default base) and pull latest.
+      5. Attempt to create/use branch {{branch}}.
+      6. If {{branch}} already exists (local or remote), auto-generate a NEW unique branch by appending a timestamp and short suffix, then use that branch instead.
+      7. Detect build/test commands from project config and CI files.
+      8. Ensure required hygiene files exist (.gitignore, etc.).
+      9. Run baseline build and test.
+      10. Report commands, baseline status, FINAL repo, and the FINAL branch actually used.
 
       Reply with:
       STATUS: done
+      REPO: <final-repo-path-used>
+      BRANCH: <final-branch-name-used>
       BUILD_CMD: <build command>
       TEST_CMD: <test command>
       CI_NOTES: <brief CI notes>
@@ -154,7 +167,7 @@ steps:
       verify_each: true
       verify_step: verify
     input: |
-      Implement the following user story. You are working on ONE story in a fresh session.
+      Implement ONE story in a fresh session.
 
       TASK (overall):
       {{task}}
@@ -179,15 +192,13 @@ steps:
       {{progress}}
 
       Instructions:
-      1. Read progress-{{run_id}}.txt — especially the Codebase Patterns section
-      2. Pull latest on the branch
-      3. Implement this story only
-      4. Write tests for this story's functionality
-      5. Run typecheck / build
-      6. Run tests to confirm they pass
-      7. Commit: feat: {{current_story_id}} - {{current_story_title}}
-      8. Rewrite progress-{{run_id}}.txt with updated story results and patterns
-      9. Update Codebase Patterns if you found reusable patterns
+      1. Work only on CURRENT STORY and its acceptance criteria.
+      2. Use local Codex CLI as the primary coding engine for implementation.
+      3. If VERIFY FEEDBACK exists, address every issue before resubmitting.
+      4. Write/adjust tests for this story.
+      5. Run typecheck/build and full tests.
+      6. Commit with: feat: {{current_story_id}} - {{current_story_title}}.
+      7. Rewrite progress-{{run_id}}.txt with story results and reusable patterns.
 
       Reply with:
       STATUS: done
@@ -201,7 +212,7 @@ steps:
   - id: verify
     agent: verifier
     input: |
-      Verify the developer's work on this story.
+      Verify this story implementation.
 
       TASK (overall):
       {{task}}
@@ -218,29 +229,20 @@ steps:
       {{progress}}
 
       Check:
-      1. Code exists (not just TODOs or placeholders)
-      2. Each acceptance criterion for the story is met
-      3. Tests were written for this story's functionality
-      4. Tests pass (run {{test_cmd}})
-      5. No obvious incomplete work
-      6. Typecheck passes
+      1. Each acceptance criterion in CURRENT STORY is satisfied.
+      2. Tests for this story exist and are meaningful.
+      3. Run {{test_cmd}} and confirm pass.
+      4. Confirm typecheck/build passes.
+      5. Confirm no obvious incomplete work.
 
       ## Visual Verification (Frontend Changes)
       Has frontend changes: {{has_frontend_changes}}
 
-      If {{has_frontend_changes}} is 'true', you MUST also perform visual verification:
-      1. Use the agent-browser skill to visually inspect the changed UI
-      2. Open the changed HTML file directly (file:// URL) or spin up a local dev server if the project requires one
-      3. Take a screenshot of the rendered page
-      4. Visually confirm:
-         - Layout renders correctly (no broken/overlapping elements)
-         - Styling is applied as expected (colors, fonts, spacing)
-         - All visible elements from the story are present and properly positioned
-         - No missing images, icons, or visual assets
-         - Text is readable and not clipped or hidden
-      5. A visual PASS means: the page renders without broken layout, missing elements, or overlapping content
-      6. A visual FAIL means: broken layout, missing/invisible elements, overlapping or misaligned content, unstyled raw HTML, or obvious rendering errors
-      7. Include your visual findings in VERIFIED output
+      If {{has_frontend_changes}} is 'true', also do visual verification with agent-browser:
+      1. Open changed UI (file URL or local server).
+      2. Capture screenshot.
+      3. Confirm layout/styling/visibility are correct.
+      4. Include visual findings in VERIFIED.
 
       If {{has_frontend_changes}} is 'false', skip visual verification entirely.
 
@@ -262,7 +264,7 @@ steps:
   - id: test
     agent: tester
     input: |
-      Integration and E2E testing of the implementation.
+      Run integration/E2E validation for the completed feature.
 
       TASK:
       {{task}}
@@ -276,12 +278,12 @@ steps:
       PROGRESS LOG:
       {{progress}}
 
-      Your job (integration/E2E testing — unit tests were already written per-story):
-      1. Run the full test suite ({{test_cmd}}) to confirm everything passes together
-      2. Look for integration issues between stories
-      3. If this is a UI feature, use agent-browser to test it end-to-end
-      4. Check cross-cutting concerns: error handling, edge cases across features
-      5. Verify the overall feature works as a cohesive whole
+      Instructions:
+      1. Run full suite: {{test_cmd}}.
+      2. Check integration between stories.
+      3. If UI exists, run end-to-end browser checks.
+      4. Check cross-cutting behavior (errors, edge cases).
+      5. Confirm feature works as a cohesive whole.
 
       Reply with:
       STATUS: done
@@ -301,7 +303,7 @@ steps:
   - id: pr
     agent: developer
     input: |
-      Create a code review submission for your changes (GitHub PR or GitLab MR).
+      Create the code review submission (GitHub PR or GitLab MR).
 
       TASK:
       {{task}}
@@ -315,20 +317,10 @@ steps:
       {{progress}}
 
       Instructions:
-      1. Detect repository host from `git remote get-url origin`.
-      2. If GitHub:
-         - Prefer `gh pr create` with a clear title/body and test summary.
-         - If `gh` is unavailable or unauthenticated, fallback to:
-           a) push branch to origin,
-           b) generate the manual PR creation URL,
-           c) return it with explicit next-step notes.
-      3. If GitLab:
-         - Prefer `glab mr create` with a clear title/body and test summary.
-         - If `glab` is unavailable or unauthenticated, fallback to:
-           a) push branch to origin,
-           b) generate the manual MR creation URL,
-           c) return it with explicit next-step notes.
-      4. Never fail only because Git hosting CLI auth is missing if fallback (push + manual URL) succeeds.
+      1. Detect host from `git remote get-url origin`.
+      2. Prefer `gh pr create` (GitHub) or `glab mr create` (GitLab).
+      3. If CLI auth is unavailable: push branch, generate manual PR/MR URL, return notes.
+      4. Do not fail solely due to missing hosting CLI auth when manual fallback works.
 
       Reply with:
       STATUS: done
@@ -343,7 +335,7 @@ steps:
   - id: review
     agent: reviewer
     input: |
-      Review the submitted code change (GitHub PR or GitLab MR).
+      Review the submitted change (GitHub PR or GitLab MR).
 
       PR: {{pr}}
       TASK: {{task}}
@@ -355,36 +347,25 @@ steps:
       PROGRESS LOG:
       {{progress}}
 
-      Review for:
-      - Code quality and clarity
-      - Potential bugs or issues
-      - Test coverage
-      - Follows project conventions
+      Review goals:
+      - Correctness and bug risk
+      - Test coverage and reliability
+      - Project convention alignment
 
       Instructions:
-      1. Detect repository host from `git remote get-url origin`.
-      2. If GitHub and PR is a real URL, use `gh pr view` / `gh pr diff`, then post review via `gh pr review`.
-      3. If GitLab and MR is a real URL, prefer `glab mr view` / `glab mr diff`, and post review via `glab mr note` (or equivalent review command).
-      4. If submission is manual URL or hosting CLI auth is unavailable:
-         - Perform local review from branch diff (`git fetch`, `git checkout {{branch}}`, `git diff` vs target branch)
-         - Return decision + actionable feedback in output
-         - Do NOT fail solely due to missing hosting auth
+      1. Detect host from `git remote get-url origin`.
+      2. If PR/MR URL is actionable, review via gh/glab CLI.
+      3. If manual URL or no auth, do local diff review on {{branch}}.
+      4. Return decision plus actionable feedback.
 
       ## Visual Review (Frontend Changes)
       Has frontend changes: {{has_frontend_changes}}
 
-      If {{has_frontend_changes}} is 'true', you MUST also perform a visual design review:
-      1. Check out the branch: git checkout {{branch}}
-      2. Use the agent-browser skill to open the changed page (file:// URL or local dev server)
-      3. Take a screenshot of the rendered page
-      4. Evaluate visual polish and design quality:
-         - Does the UI look polished and intentional, not rough or placeholder-quality?
-         - Are colors, typography, and spacing consistent with the rest of the project?
-         - Is the layout visually balanced and well-aligned?
-         - Do interactive elements look clickable/tappable?
-         - Is the overall design cohesive — does it feel like part of the same product?
-      5. This is a DESIGN review, not a structural check — the verify step already confirmed elements render. You are checking whether the result looks GOOD.
-      6. Include your visual design assessment in the review output
+      If {{has_frontend_changes}} is 'true', do visual design review:
+      1. Checkout {{branch}} and open changed UI.
+      2. Capture screenshot.
+      3. Evaluate polish, consistency, alignment, and interaction clarity.
+      4. Include visual assessment in output.
 
       If {{has_frontend_changes}} is 'false', skip visual review entirely.
 

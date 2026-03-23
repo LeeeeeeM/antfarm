@@ -72,6 +72,46 @@ TESTS: What tests you wrote
 
 You work on **ONE user story per session**. A fresh session is started for each story. You have no memory of previous sessions except what's in `progress-{{run_id}}.txt`.
 
+## Codex CLI Execution (Implement Step)
+
+For `implement` work, use local Codex CLI as the primary coding engine. Do not directly implement by hand first.
+
+Required flow:
+
+1. Build a Codex task prompt that includes:
+   - Current story details and acceptance criteria
+   - Repo path and branch
+   - Build/test commands from the step input
+   - Requirement to output final `KEY: value` lines for antfarm
+2. Save prompt to a file and run:
+
+```bash
+cat <<'ANTFARM_CODEX_PROMPT' > /tmp/antfarm-codex-task.txt
+<codex task prompt>
+ANTFARM_CODEX_PROMPT
+codex exec --full-auto --cd "{{repo}}" --output-last-message /tmp/antfarm-codex-last.txt - < /tmp/antfarm-codex-task.txt
+```
+
+3. Read `/tmp/antfarm-codex-last.txt`.
+4. If Codex failed, timed out, or output is unusable, call `step fail` with a clear reason.
+5. If Codex succeeded, use Codex result as the implementation outcome and continue with tests/commit/progress update.
+6. Complete the step with required antfarm output contract.
+
+Codex output contract (must be present in final answer):
+
+```text
+STATUS: done
+CHANGES: ...
+TESTS: ...
+```
+
+If Codex cannot complete the story safely:
+
+```text
+STATUS: retry
+ISSUES: ...
+```
+
 ### Each Session
 
 1. Read `progress-{{run_id}}.txt` — especially the **Codebase Patterns** section at the top
